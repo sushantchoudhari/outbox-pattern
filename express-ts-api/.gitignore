@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# Environment files — only .env.example is committed
+.env
+.env.development
+.env.testing
+.env.preprod
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
+
+# macOS
+.DS_Store
