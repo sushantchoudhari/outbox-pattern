@@ -1,101 +1,99 @@
 'use strict';
 
 /**
- * Outbox Publisher
+ * outboxPublisher.js — Outbox Relay Worker
+ * ─────────────────────────────────────────
+ * This module does one job: read unpublished events from the database
+ * and deliver them to SNS.  It runs on a timer (see index.js).
  *
- * Implements the "relay" step of the Transactional Outbox Pattern:
+ * HOW THE OUTBOX PATTERN WORKS (plain English)
+ * ─────────────────────────────────────────────
+ * When the API saves a new application it also writes a matching "event"
+ * row into the outbox_events table — all inside ONE database transaction.
+ * This means either both writes happen or neither does.
  *
- *   1. Open a PostgreSQL transaction.
- *   2. SELECT … FOR UPDATE SKIP LOCKED — atomically lock a batch of unpublished
- *      outbox_events rows.  Rows already locked by another worker replica are
- *      skipped, so this is safe to run on multiple concurrent worker instances.
- *   3. Publish each event to the SNS topic.
- *   4. UPDATE outbox_events SET published = TRUE — mark rows as published inside
- *      the same transaction so the update is atomic with the lock release.
- *   5. COMMIT — both the publish record updates land or neither does.
+ * This worker then picks up those event rows and publishes them to AWS SNS.
+ * Once published, it marks the row as done so it won't be sent again.
  *
- * Failure behaviour:
- *   If any SNS publish call throws, the error propagates out of the loop,
- *   the catch block issues a ROLLBACK, and all rows in the batch remain with
- *   published = FALSE.  They will be picked up again on the next poll cycle.
- *   This guarantees at-least-once delivery — duplicate messages are handled
- *   on the consumer side via idempotent upserts (External_ID__c in Salesforce).
+ * WHY THIS APPROACH?
+ * ──────────────────
+ * Without the outbox pattern you might try to publish to SNS directly inside
+ * the API request.  The problem: the database write can succeed but the SNS
+ * call can fail, leaving your system in an inconsistent state.
+ * The outbox pattern removes that risk — the event is durable in the database
+ * first, and this worker handles delivery separately with automatic retries.
  */
 
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
 const pool = require('./db');
 
-/**
- * SNS client — constructed once at module load and reused across poll cycles.
- *
- * SNS_ENDPOINT: set to http://localstack:4566 in the Docker Compose environment
- * so traffic is routed to LocalStack instead of real AWS.  Leave this variable
- * unset in production and the SDK uses the default regional endpoint.
- *
- * Credentials: placeholder values are supplied for LocalStack compatibility.
- * In production the Lambda/ECS task role provides credentials automatically
- * via the EC2 metadata service — hardcoded keys are never used.
- */
+// ─── Configuration ────────────────────────────────────────────────────────────
+
+// The SNS topic where application events are published.
+// Example: arn:aws:sns:us-east-1:123456789012:application-events
+const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN;
+
+// How many events to process in one database round-trip.
+// Keeping this at 10 is safe for most workloads.  If you need higher
+// throughput, increase it — but larger batches mean a bigger rollback
+// if something fails midway.
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '10', 10);
+
+// ─── SNS Client ───────────────────────────────────────────────────────────────
+//
+// One client instance is created here and shared across all poll cycles.
+// Creating a new client on every call would be wasteful (it involves TLS
+// handshakes and connection setup).
+//
+// LOCAL DEVELOPMENT: SNS_ENDPOINT points to LocalStack (http://localstack:4566)
+//   so no real AWS account is needed.
+// PRODUCTION: Leave SNS_ENDPOINT unset — the SDK automatically connects to
+//   the real AWS SNS endpoint for the configured region.
 const snsClient = new SNSClient({
-  region:   process.env.AWS_REGION || 'us-east-1',
-  // SNS_ENDPOINT is set to http://localstack:4566 locally; unset in production.
-  endpoint: process.env.SNS_ENDPOINT,
+  region:   process.env.AWS_REGION    || 'us-east-1',
+  endpoint: process.env.SNS_ENDPOINT, // undefined in production — that is correct
   credentials: {
+    // These placeholder values satisfy the SDK in local/test environments.
+    // In production, real credentials come from the ECS/EC2 IAM role
+    // automatically — you never hardcode real keys here.
     accessKeyId:     process.env.AWS_ACCESS_KEY_ID     || 'test',
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || 'test',
   },
 });
 
-// The ARN of the SNS topic to publish events to.
-// Must be set via environment variable — no default; an undefined ARN causes
-// the SNS SDK call to throw, which rolls back the transaction and retries.
-const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN;
-
-// Maximum number of outbox rows to process per poll cycle.  Tuning guidance:
-//   - Too large: a single slow SNS call (or failure) stalls the entire batch.
-//   - Too small: increases the number of DB round-trips relative to throughput.
-// 10 is a safe default; raise to 25-50 if you have sustained high throughput.
-const BATCH_SIZE    = parseInt(process.env.BATCH_SIZE || '10', 10);
+// ─── Main function ────────────────────────────────────────────────────────────
 
 /**
- * Fetches up to BATCH_SIZE unpublished outbox events inside a single
- * database transaction, publishes each to SNS, then marks them as published.
+ * Runs one "relay cycle":
+ *   1. Fetch a batch of unpublished events from the database (with a row lock).
+ *   2. Publish each event to SNS.
+ *   3. Mark each event as published.
+ *   4. Commit — all three steps land together, or none of them do.
  *
- * FOR UPDATE SKIP LOCKED ensures multiple worker replicas never compete
- * for the same rows — any row already locked by another session is skipped.
+ * If anything goes wrong (SNS is down, DB error, etc.) the transaction is
+ * rolled back and the events stay unpublished.  The next poll cycle will
+ * try again automatically — no manual intervention needed.
  *
- * If the SNS publish call throws, the error propagates, the transaction is
- * rolled back, and the row stays unpublished for the next poll cycle.
- *
- * @returns {number} count of events successfully published
- */
-/**
- * Fetches up to BATCH_SIZE unpublished outbox events inside a single
- * database transaction, publishes each to SNS, then marks them as published.
- *
- * FOR UPDATE SKIP LOCKED ensures multiple worker replicas never compete
- * for the same rows — any row already locked by another session is skipped.
- *
- * If the SNS publish call throws, the error propagates, the transaction is
- * rolled back, and the row stays unpublished for the next poll cycle.
- *
- * @returns {Promise<number>} count of events successfully published this cycle
+ * @returns {Promise<number>} How many events were published in this cycle.
  */
 async function publishOutboxEvents() {
-  // Acquire a dedicated client from the pool.  Using a client (rather than
-  // pool.query) is required because BEGIN/COMMIT must run on the same
-  // connection — pool.query may route each call to a different client.
+  // We need a dedicated connection (not pool.query) because BEGIN and COMMIT
+  // must run on the SAME physical connection.  pool.query picks any free
+  // connection each time, which would spread our transaction across multiple
+  // connections and break it.
   const client = await pool.connect();
+
   try {
     await client.query('BEGIN');
 
-    // Lock the oldest unpublished rows in insertion order.
-    // ORDER BY created_at ASC guarantees FIFO delivery to SNS, which matters
-    // for consumers that depend on event ordering within an aggregate.
-    // FOR UPDATE SKIP LOCKED: rows locked by another transaction (e.g. a
-    // second worker replica) are silently bypassed rather than blocking — this
-    // is what makes horizontal scaling of the worker safe.
-    const { rows: events } = await client.query(
+    // ── Step 1: Fetch unpublished events ─────────────────────────────────────
+    //
+    // FOR UPDATE: lock these rows so another worker replica won't pick them up.
+    // SKIP LOCKED: instead of waiting for locked rows, just skip them.
+    //   This makes it safe to run multiple worker instances in parallel —
+    //   each instance works on a different set of rows with no conflicts.
+    // ORDER BY created_at ASC: process oldest events first (FIFO order).
+    const { rows: unpublishedEvents } = await client.query(
       `SELECT id, aggregate_type, aggregate_id, event_type, payload
          FROM outbox_events
         WHERE published = FALSE
@@ -105,77 +103,87 @@ async function publishOutboxEvents() {
       [BATCH_SIZE],
     );
 
-    // Nothing to do — commit the no-op transaction and release the client.
-    if (events.length === 0) {
+    // Nothing to publish — close the transaction and exit early.
+    if (unpublishedEvents.length === 0) {
       await client.query('COMMIT');
       return 0;
     }
 
-    console.log(`[worker] Processing ${events.length} outbox event(s)…`);
+    console.log(`[worker] Processing ${unpublishedEvents.length} outbox event(s)…`);
 
-    for (const event of events) {
-      // ── Publish to SNS ───────────────────────────────────────────────────
-      // MessageAttributes carry metadata that SNS filter policies can use
-      // to route messages to specific subscriptions without deserialising
-      // the Message body.  Adding eventType and aggregateType here means
-      // future consumers can subscribe to a subset of events without any
-      // changes to the publisher.
-      const { MessageId } = await snsClient.send(
-        new PublishCommand({
-          TopicArn: SNS_TOPIC_ARN,
-          // The payload column is already a parsed JSONB object (returned by
-          // pg as a JS object).  Re-serialise to a string because SNS Message
-          // must be a string.
-          Message:  JSON.stringify(event.payload),
-          MessageAttributes: {
-            eventType: {
-              DataType:    'String',
-              StringValue: event.event_type,
-            },
-            aggregateType: {
-              DataType:    'String',
-              StringValue: event.aggregate_type,
-            },
-          },
-        }),
-      );
-
-      // ── Mark as published (same transaction) ─────────────────────────────
-      // Storing the SNS MessageId provides an audit trail: you can correlate
-      // a database row with a specific SNS message in CloudWatch Logs.
-      // Both the status update and the SNS call are inside the same database
-      // transaction — if COMMIT fails after SNS succeeds the row stays
-      // unpublished and the message will be published again on the next cycle
-      // (at-least-once).  The consumer's idempotent upsert handles the duplicate.
-      await client.query(
-        `UPDATE outbox_events
-            SET published      = TRUE,
-                published_at   = NOW(),
-                sns_message_id = $1
-          WHERE id = $2`,
-        [MessageId, event.id],
-      );
-
-      console.log(
-        `[worker] event=${event.id} type=${event.event_type} → SNS msgId=${MessageId}`,
-      );
+    // ── Step 2 & 3: Publish each event, then mark it done ────────────────────
+    for (const event of unpublishedEvents) {
+      await publishSingleEvent(client, event);
     }
 
-    // Commit releases all FOR UPDATE locks and makes the published = TRUE
-    // updates visible to other connections.
+    // ── Step 4: Commit ────────────────────────────────────────────────────────
+    // This releases the row locks and makes all the "published = TRUE" updates
+    // visible to the rest of the application.
     await client.query('COMMIT');
-    return events.length;
+    return unpublishedEvents.length;
+
   } catch (err) {
-    // Roll back on any failure — SNS errors, DB errors, or unexpected throws.
-    // After ROLLBACK the locked rows become visible again immediately so
-    // the next poll cycle (or another worker replica) can retry them.
+    // Something went wrong.  Roll back the entire batch so nothing is
+    // left in a half-published state.  All events remain published = FALSE
+    // and will be retried on the next poll cycle.
     await client.query('ROLLBACK');
-    throw err;
+    throw err; // let the caller (index.js) log this and schedule the retry
+
   } finally {
-    // Always release back to the pool — even if ROLLBACK itself threw.
-    // Failure to release would leak the client and eventually exhaust the pool.
+    // ALWAYS release the connection back to the pool, even if ROLLBACK threw.
+    // Not releasing would permanently leak a connection and eventually
+    // exhaust the pool, causing all future requests to hang.
     client.release();
   }
 }
 
+// ─── Helper ───────────────────────────────────────────────────────────────────
+
+/**
+ * Publishes a single outbox event to SNS, then updates its database row
+ * to mark it as published.  Both operations run inside the caller's
+ * open transaction, so they are atomic.
+ *
+ * @param {import('pg').PoolClient} client  - Active database transaction client.
+ * @param {object}                  event   - Row from outbox_events.
+ */
+async function publishSingleEvent(client, event) {
+  // Send the event to SNS.
+  // MessageAttributes let downstream consumers filter by eventType or
+  // aggregateType without parsing the message body — useful when you later
+  // add other event types and want separate Lambda consumers per type.
+  const { MessageId } = await snsClient.send(
+    new PublishCommand({
+      TopicArn: SNS_TOPIC_ARN,
+      // event.payload is a JS object (PostgreSQL JSONB is auto-parsed by pg).
+      // SNS requires the message to be a plain string, so we serialise it here.
+      Message: JSON.stringify(event.payload),
+      MessageAttributes: {
+        eventType: {
+          DataType:    'String',
+          StringValue: event.event_type,       // e.g. "ApplicationSubmitted"
+        },
+        aggregateType: {
+          DataType:    'String',
+          StringValue: event.aggregate_type,   // e.g. "Application"
+        },
+      },
+    }),
+  );
+
+  // Record the SNS MessageId so you can trace this database row back to
+  // a specific SNS message in CloudWatch Logs if you ever need to debug.
+  await client.query(
+    `UPDATE outbox_events
+        SET published      = TRUE,
+            published_at   = NOW(),
+            sns_message_id = $1
+      WHERE id = $2`,
+    [MessageId, event.id],
+  );
+
+  console.log(`[worker] Published event=${event.id} type=${event.event_type} → SNS msgId=${MessageId}`);
+}
+
 module.exports = { publishOutboxEvents };
+

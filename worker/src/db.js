@@ -1,27 +1,28 @@
 'use strict';
 
 /**
- * Database connection pool — worker
+ * db.js — Database Connection Pool (Worker)
+ * ──────────────────────────────────────────
+ * Creates and exports a single shared PostgreSQL connection pool.
  *
- * A single shared pg.Pool is created once at module load and reused for
- * every poll cycle.  Pooling avoids the cost of opening and closing a TCP
- * connection on every database transaction.
+ * WHY A POOL?
+ * ───────────
+ * Opening a new database connection for every query is expensive — it
+ * involves a TCP handshake and PostgreSQL authentication.  A pool keeps
+ * a small number of connections open and reuses them, which is much faster.
  *
- * Pool sizing rationale:
- *   max: 5  — the worker is single-threaded and processes one batch at a time,
- *             so more than 5 connections provides no throughput benefit and
- *             wastes database connection slots.
+ * WHY MAX 5?
+ * ──────────
+ * The worker processes events sequentially in a single thread, so it only
+ * ever needs one connection at a time.  5 slots give a small safety margin
+ * without wasting precious database connection resources.
  *
- * Timeout rationale:
- *   idleTimeoutMillis (30 s)  — connections idle longer than this are closed
- *                               and returned to the OS; prevents accumulating
- *                               stale connections on a quiet system.
- *   connectionTimeoutMillis (3 s) — if no connection is available within 3 s
- *                               the pool throws, the poll cycle catches it,
- *                               logs the error, and retries on the next tick.
- *
- * All configuration is injected via environment variables so the same image
- * works in local Docker Compose and production without rebuilding.
+ * TIMEOUTS?
+ * ─────────
+ * idleTimeoutMillis: if a connection sits unused for 30 seconds, close it.
+ *   This prevents stale connections accumulating on an idle system.
+ * connectionTimeoutMillis: if no connection is free within 3 seconds, throw.
+ *   This surfaces pool exhaustion quickly rather than hanging forever.
  */
 
 const { Pool } = require('pg');
@@ -32,18 +33,14 @@ const pool = new Pool({
   database: process.env.DB_NAME     || 'appdb',
   user:     process.env.DB_USER     || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
-  // Maximum number of clients the pool will hold open simultaneously.
-  max: 5,
-  // A client idle for longer than this is destroyed (milliseconds).
-  idleTimeoutMillis:      30_000,
-  // Throw if a client cannot be acquired from the pool within this time.
-  connectionTimeoutMillis: 3_000,
+  max:                     5,       // max simultaneous connections
+  idleTimeoutMillis:      30_000,   // close idle connections after 30 s
+  connectionTimeoutMillis: 3_000,   // throw if no connection available after 3 s
 });
 
-// Log unexpected client errors (e.g. the database server restarted and
-// terminated an idle connection).  The pool handles reconnection automatically;
-// this handler exists only to surface the error in logs rather than silently
-// swallowing it.
+// Log pool-level errors (e.g. database server restarted mid-connection).
+// The pool handles reconnection on its own — this handler just makes the
+// error visible in logs instead of swallowing it silently.
 pool.on('error', (err) => {
   console.error('[db] Unexpected pool error:', err.message);
 });
