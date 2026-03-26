@@ -29,10 +29,24 @@ echo "[2/5] Creating main SQS Queue..."
 QUEUE_URL=$(awslocal sqs create-queue \
   --queue-name salesforce-integration-queue \
   --region "$REGION" \
-  --attributes \
-    VisibilityTimeout=30 \
-    "RedrivePolicy={\"deadLetterTargetArn\":\"$DLQ_ARN\",\"maxReceiveCount\":\"3\"}" \
   --query 'QueueUrl' --output text)
+
+# Set VisibilityTimeout and RedrivePolicy separately to avoid CLI quoting issues
+REDRIVE_JSON="{\"deadLetterTargetArn\":\"${DLQ_ARN}\",\"maxReceiveCount\":\"3\"}"
+awslocal sqs set-queue-attributes \
+  --queue-url "$QUEUE_URL" \
+  --region "$REGION" \
+  --attributes VisibilityTimeout=30
+
+printf '%s' "$REDRIVE_JSON" > /tmp/redrive.json
+awslocal sqs set-queue-attributes \
+  --queue-url "$QUEUE_URL" \
+  --region "$REGION" \
+  --attributes "$(printf '{"RedrivePolicy":"%s"}' "$(cat /tmp/redrive.json | sed 's/"/\\"/g')")" 2>/dev/null || \
+awslocal sqs set-queue-attributes \
+  --queue-url "$QUEUE_URL" \
+  --region "$REGION" \
+  --attributes "{\"RedrivePolicy\":\"$(cat /tmp/redrive.json | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))')\"}"
 
 QUEUE_ARN=$(awslocal sqs get-queue-attributes \
   --queue-url "$QUEUE_URL" \
@@ -63,12 +77,24 @@ awslocal sns subscribe \
 
 # ── 5. Set SQS resource policy to allow SNS delivery ─────────
 echo "[5/5] Setting SQS policy to allow SNS to send messages..."
-POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"sqs:SendMessage\",\"Resource\":\"$QUEUE_ARN\",\"Condition\":{\"ArnEquals\":{\"aws:SourceArn\":\"$SNS_TOPIC_ARN\"}}}]}"
-
-awslocal sqs set-queue-attributes \
-  --queue-url "$QUEUE_URL" \
-  --attributes "Policy=$POLICY" \
-  --region "$REGION"
+python3 - <<PYEOF
+import subprocess, json
+policy = json.dumps({
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "sqs:SendMessage",
+    "Resource": "$QUEUE_ARN",
+    "Condition": {"ArnEquals": {"aws:SourceArn": "$SNS_TOPIC_ARN"}}
+  }]
+})
+attrs = json.dumps({"Policy": policy})
+subprocess.run(
+  ["awslocal","sqs","set-queue-attributes","--queue-url","$QUEUE_URL","--region","$REGION","--attributes", attrs],
+  check=True
+)
+PYEOF
 
 echo ""
 echo "==========================================="

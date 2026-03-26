@@ -1,9 +1,7 @@
-version: '3.9'
-
 services:
   # ── Data Layer ──────────────────────────────────────────────
   postgres:
-    image: postgres:15-alpine
+    image: public.ecr.aws/docker/library/postgres:15-alpine
     environment:
       POSTGRES_DB: appdb
       POSTGRES_USER: postgres
@@ -20,7 +18,7 @@ services:
 
   # Run migrations once after postgres is healthy
   migrate:
-    image: postgres:15-alpine
+    image: public.ecr.aws/docker/library/postgres:15-alpine
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,7 +31,7 @@ services:
 
   # ── Messaging / Infra Layer (LocalStack) ─────────────────────
   localstack:
-    image: localstack/localstack:3
+    image: public.ecr.aws/localstack/localstack:3
     environment:
       - SERVICES=sns,sqs,lambda
       - DEFAULT_REGION=us-east-1
