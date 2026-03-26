@@ -12,8 +12,9 @@ node_modules/
 # macOS
 .DS_Store
 
-# VS Code
-.vscode/
+# VS Code — ignore personal settings but keep shared config
+.vscode/settings.json
+.vscode/*.code-workspace
 
 # Logs
 *.log

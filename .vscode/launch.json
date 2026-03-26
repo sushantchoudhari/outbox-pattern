@@ -1,0 +1,71 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API: Debug",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/api/src/index.js",
+      "cwd": "${workspaceFolder}/api",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "appdb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "postgres",
+        "PORT": "3000"
+      },
+      "runtimeArgs": ["--inspect"],
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal",
+      "restart": true
+    },
+    {
+      "name": "Worker: Debug",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/worker/src/index.js",
+      "cwd": "${workspaceFolder}/worker",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "appdb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "postgres",
+        "SNS_ENDPOINT": "http://localhost:4566",
+        "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:000000000000:application-events",
+        "AWS_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "test",
+        "AWS_SECRET_ACCESS_KEY": "test",
+        "POLL_INTERVAL_MS": "5000",
+        "BATCH_SIZE": "10"
+      },
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Lambda: Debug (local invoke)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/lambda/src/handler.js",
+      "cwd": "${workspaceFolder}/lambda",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "SALESFORCE_INSTANCE_URL": "https://your-instance.my.salesforce.com",
+        "SALESFORCE_CLIENT_ID": "your-client-id",
+        "SALESFORCE_CLIENT_SECRET": "your-client-secret"
+      },
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "API + Worker (debug both)",
+      "configurations": ["API: Debug", "Worker: Debug"],
+      "stopAll": true
+    }
+  ]
+}

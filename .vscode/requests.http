@@ -1,0 +1,22 @@
+### Submit an application
+POST http://localhost:3000/applications
+Content-Type: application/json
+
+{
+  "applicantName": "Jane Doe",
+  "applicantEmail": "jane@example.com",
+  "data": {
+    "program": "housing",
+    "priority": "high"
+  }
+}
+
+###
+
+### Get application by ID (replace UUID after submitting)
+GET http://localhost:3000/applications/{{applicationId}}
+
+###
+
+### Health check
+GET http://localhost:3000/health
