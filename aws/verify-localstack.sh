@@ -1,47 +1,48 @@
 #!/bin/bash
 # aws/verify-localstack.sh
-# Quick sanity-check: lists all SNS/SQS resources created by LocalStack init.
+# Quick sanity-check: lists all SNS/SQS/Lambda resources created by LocalStack init.
 # Usage: ./aws/verify-localstack.sh
+#
+# No AWS CLI required — uses awslocal inside the LocalStack container via
+# docker compose exec, with a curl fallback for the health check.
 set -euo pipefail
 
 ENDPOINT=http://localhost:4566
 REGION=us-east-1
 
-export AWS_PROFILE=localstack
-export AWS_CONFIG_FILE="$(cd "$(dirname "$0")" && pwd)/config"
-export AWS_SHARED_CREDENTIALS_FILE="$(cd "$(dirname "$0")" && pwd)/credentials"
-
 echo "=== LocalStack resource check ==="
 
 echo ""
+echo "── LocalStack Health ──────────────────────"
+curl -s "$ENDPOINT/_localstack/health" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for svc in ['sns','sqs','lambda']:
+    print(f'  {svc:10s}: {d[\"services\"].get(svc, \"n/a\")}')
+"
+
+echo ""
 echo "── SNS Topics ─────────────────────────────"
-aws sns list-topics \
-  --endpoint-url "$ENDPOINT" \
-  --region "$REGION" \
-  --query 'Topics[].TopicArn' \
-  --output table
+docker compose exec localstack \
+  awslocal sns list-topics --region "$REGION" \
+  --query 'Topics[].TopicArn' --output table
 
 echo ""
 echo "── SQS Queues ─────────────────────────────"
-aws sqs list-queues \
-  --endpoint-url "$ENDPOINT" \
-  --region "$REGION" \
-  --output table
+docker compose exec localstack \
+  awslocal sqs list-queues --region "$REGION" --output table
 
 echo ""
 echo "── Lambda Functions ───────────────────────"
-aws lambda list-functions \
-  --endpoint-url "$ENDPOINT" \
-  --region "$REGION" \
-  --query 'Functions[].FunctionName' \
-  --output table
+docker compose exec localstack \
+  awslocal lambda list-functions --region "$REGION" \
+  --query 'Functions[].FunctionName' --output table
 
 echo ""
 echo "── DLQ depth ──────────────────────────────"
-aws sqs get-queue-attributes \
-  --endpoint-url "$ENDPOINT" \
+docker compose exec localstack \
+  awslocal sqs get-queue-attributes \
   --region "$REGION" \
-  --queue-url http://localhost:4566/000000000000/salesforce-integration-dlq \
+  --queue-url "http://sqs.$REGION.localhost.localstack.cloud:4566/000000000000/salesforce-integration-dlq" \
   --attribute-names ApproximateNumberOfMessages \
-  --query 'Attributes' \
-  --output table
+  --query 'Attributes' --output table
