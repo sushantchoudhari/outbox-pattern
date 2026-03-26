@@ -398,12 +398,10 @@ Worker log should show:
 After submitting an application and waiting 6 seconds for the worker to publish:
 
 ```bash
-aws sqs receive-message \
-  --endpoint-url http://localhost:4566 \
+docker compose exec localstack awslocal sqs receive-message \
   --region us-east-1 \
-  --queue-url http://localhost:4566/000000000000/salesforce-integration-queue \
-  --max-number-of-messages 1 \
-  --profile localstack | jq
+  --queue-url "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/salesforce-integration-queue" \
+  --max-number-of-messages 1
 ```
 
 **Expected:** a message object containing the SNS envelope. The `Body` field is a JSON string with a `Message` field containing the outbox event payload:
@@ -426,10 +424,8 @@ aws sqs receive-message \
 ### Test 6.2 — Confirm SNS topic ARN
 
 ```bash
-aws sns list-topics \
-  --endpoint-url http://localhost:4566 \
+docker compose exec localstack awslocal sns list-topics \
   --region us-east-1 \
-  --profile localstack \
   --query 'Topics[].TopicArn' \
   --output table
 ```
@@ -445,10 +441,10 @@ arn:aws:sns:us-east-1:000000000000:application-events
 ### Test 6.3 — Confirm SQS subscription to SNS
 
 ```bash
-aws sns list-subscriptions \
-  --endpoint-url http://localhost:4566 \
+docker compose exec localstack awslocal sns list-subscriptions \
   --region us-east-1 \
-  --profile localstack | jq '.Subscriptions[] | {Protocol, Endpoint, SubscriptionArn}'
+  --query 'Subscriptions[].{Protocol:Protocol,Endpoint:Endpoint}' \
+  --output table
 ```
 
 **Expected:** one subscription with `Protocol: "sqs"` pointing to the queue ARN.
@@ -458,12 +454,10 @@ aws sns list-subscriptions \
 ### Test 6.4 — Confirm DLQ is empty (healthy system)
 
 ```bash
-aws sqs get-queue-attributes \
-  --endpoint-url http://localhost:4566 \
+docker compose exec localstack awslocal sqs get-queue-attributes \
   --region us-east-1 \
-  --queue-url http://localhost:4566/000000000000/salesforce-integration-dlq \
+  --queue-url "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/salesforce-integration-dlq" \
   --attribute-names ApproximateNumberOfMessages \
-  --profile localstack \
   --query 'Attributes.ApproximateNumberOfMessages'
 ```
 
@@ -494,10 +488,8 @@ chmod +x scripts/deploy-lambda-local.sh
 ### Test 7.2 — Confirm Lambda was registered
 
 ```bash
-aws lambda list-functions \
-  --endpoint-url http://localhost:4566 \
+docker compose exec localstack awslocal lambda list-functions \
   --region us-east-1 \
-  --profile localstack \
   --query 'Functions[].FunctionName' \
   --output table
 ```
@@ -513,7 +505,7 @@ salesforce-integration-consumer
 ### Test 7.3 — Confirm SQS event-source mapping is enabled
 
 ```bash
-awslocal lambda list-event-source-mappings \
+docker compose exec localstack awslocal lambda list-event-source-mappings \
   --function-name salesforce-integration-consumer \
   --region us-east-1 \
   --query 'EventSourceMappings[0].{State:State,BatchSize:BatchSize,Source:EventSourceArn}' \
@@ -549,12 +541,12 @@ EOF
 Invoke the Lambda:
 
 ```bash
-awslocal lambda invoke \
+docker compose exec localstack awslocal lambda invoke \
   --function-name salesforce-integration-consumer \
   --region us-east-1 \
   --payload file:///tmp/test-event.json \
   --log-type Tail \
-  /tmp/lambda-response.json && cat /tmp/lambda-response.json | jq
+  /tmp/lambda-response.json && docker compose exec localstack cat /tmp/lambda-response.json
 ```
 
 **Expected response** (without real Salesforce credentials):
