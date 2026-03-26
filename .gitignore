@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment secrets — never commit real credentials
+.env
+.env.local
+.env.*.local
+
+# Lambda build artefact
+/tmp/lambda-deploy.zip
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
+
+# LocalStack persisted state (if mounted)
+localstack/volume/

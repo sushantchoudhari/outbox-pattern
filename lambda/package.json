@@ -1,0 +1,12 @@
+{
+  "name": "salesforce-integration-consumer",
+  "version": "1.0.0",
+  "description": "Lambda — consumes SQS/SNS events and upserts Cases in Salesforce",
+  "main": "src/handler.js",
+  "scripts": {
+    "start": "node src/handler.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8"
+  }
+}
