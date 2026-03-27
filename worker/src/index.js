@@ -15,14 +15,7 @@
  * because they stay in the database with published = FALSE until they succeed.
  */
 
-const { publishOutboxEvents } = require('./outboxPublisher');
-
-// ─── Configuration ────────────────────────────────────────────────────────────
-
-// Time to wait between poll cycles, in milliseconds.
-// Default: 5 000 ms (5 seconds).  Lower = faster delivery, more DB load.
-// Higher = cheaper to run but higher end-to-end event delivery latency.
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '5000', 10);
+const { loadConfig } = require('./config');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +35,22 @@ function wait(ms) {
  * is running with the right settings, then enters the poll loop.
  */
 async function startWorker() {
+  // Load secrets from SSM Parameter Store into process.env (production only).
+  // In local/dev/CI (no SSM_PARAMETER_PREFIX) this is a no-op.
+  //
+  // IMPORTANT: outboxPublisher.js and db.js create the SNS client and the
+  // pg Pool at require()-time, reading directly from process.env.  They must
+  // therefore be required AFTER SSM loading, via dynamic require() below.
+  await loadConfig();
+
+  // Dynamic require — deferred until SSM has populated process.env so that
+  // the pg Pool and SNSClient are initialised with the correct values.
+  const { publishOutboxEvents } = require('./outboxPublisher');
+
+  // ─── Configuration ──────────────────────────────────────────────────────
+  // Read after SSM loading so an SSM-stored POLL_INTERVAL_MS is respected.
+  const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '5000', 10);
+
   console.log('[worker] Outbox publisher started');
   console.log(`[worker] Topic  : ${process.env.SNS_TOPIC_ARN}`);
   console.log(`[worker] Poll   : every ${POLL_INTERVAL_MS}ms`);
