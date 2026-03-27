@@ -15,45 +15,78 @@
  */
 
 const axios = require('axios');
+const { loadConfig } = require('./config');
 
-// ─── Startup validation ───────────────────────────────────────────────────────
-// Validated once at container init time.  A missing variable throws here
-// rather than silently failing inside the first invocation.
-const REQUIRED_ENV = [
-  'SALESFORCE_INSTANCE_URL',
-  'SALESFORCE_CLIENT_ID',
-  'SALESFORCE_CLIENT_SECRET',
-];
-for (const key of REQUIRED_ENV) {
-  if (!process.env[key]) {
-    throw new Error(`Lambda misconfiguration: missing required environment variable "${key}"`);
-  }
-}
-
-const SF_INSTANCE_URL  = process.env.SALESFORCE_INSTANCE_URL.replace(/\/$/, '');
-const SF_CLIENT_ID     = process.env.SALESFORCE_CLIENT_ID;
-const SF_CLIENT_SECRET = process.env.SALESFORCE_CLIENT_SECRET;
-const SF_TOKEN_URL     = process.env.SALESFORCE_TOKEN_URL
-  || 'https://login.salesforce.com/services/oauth2/token';
-
-// SSRF prevention — reject non-HTTPS or non-URL values early
-try {
-  const parsed = new URL(SF_INSTANCE_URL);
-  if (parsed.protocol !== 'https:') {
-    throw new Error('protocol must be https');
-  }
-} catch (err) {
-  throw new Error(`Lambda misconfiguration: invalid SALESFORCE_INSTANCE_URL — ${err.message}`);
-}
-
-// ─── HTTP client ──────────────────────────────────────────────────────────────
-// A shared instance with a conservative timeout prevents Lambda from hanging
-// for the full execution limit on a slow/unresponsive upstream.
-const http = axios.create({ timeout: 10_000 });
+// ─── Runtime state ────────────────────────────────────────────────────────────
+// These are populated during init() once SSM parameters have been loaded.
+// Declared here (at module level) so they are shared across warm invocations.
+let SF_INSTANCE_URL;
+let SF_CLIENT_ID;
+let SF_CLIENT_SECRET;
+let SF_TOKEN_URL;
+let http;
 
 // ─── Token cache ──────────────────────────────────────────────────────────────
 let cachedToken    = null;
 let tokenExpiresAt = 0;
+
+// ─── One-time initialisation ──────────────────────────────────────────────────
+// Runs once per cold start.  Subsequent invocations skip straight through.
+//
+// WHY THIS PATTERN?
+//   Lambda module-level code is synchronous, so we cannot call SSM (async)
+//   there.  Instead we do a lazy async init on the first handler invocation.
+//   Because Lambda reuses the execution environment across warm invocations,
+//   the SSM call only happens once — every subsequent call is a no-op.
+let initialized = false;
+
+async function init() {
+  if (initialized) return;
+
+  // 1. Load secrets from SSM Parameter Store into process.env.
+  //    In local / dev / CI (no SSM_PARAMETER_PREFIX set) this is a no-op and
+  //    the plain environment variables from Docker Compose / .env are used.
+  await loadConfig();
+
+  // 2. Validate that every required variable is now present.
+  const REQUIRED_ENV = [
+    'SALESFORCE_INSTANCE_URL',
+    'SALESFORCE_CLIENT_ID',
+    'SALESFORCE_CLIENT_SECRET',
+  ];
+  for (const key of REQUIRED_ENV) {
+    if (!process.env[key]) {
+      throw new Error(`Lambda misconfiguration: missing required environment variable "${key}"`);
+    }
+  }
+
+  // 3. Read config into module-level variables so they don't need to be
+  //    re-read on every invocation.
+  SF_INSTANCE_URL  = process.env.SALESFORCE_INSTANCE_URL.replace(/\/$/, '');
+  SF_CLIENT_ID     = process.env.SALESFORCE_CLIENT_ID;
+  SF_CLIENT_SECRET = process.env.SALESFORCE_CLIENT_SECRET;
+  SF_TOKEN_URL     = process.env.SALESFORCE_TOKEN_URL
+    || 'https://login.salesforce.com/services/oauth2/token';
+
+  // 4. SSRF prevention — reject non-HTTPS or non-URL values early.
+  try {
+    const parsed = new URL(SF_INSTANCE_URL);
+    if (parsed.protocol !== 'https:') {
+      throw new Error('protocol must be https');
+    }
+  } catch (err) {
+    throw new Error(`Lambda misconfiguration: invalid SALESFORCE_INSTANCE_URL — ${err.message}`);
+  }
+
+  // 5. Create the shared HTTP client once per cold start.
+  http = axios.create({ timeout: 10_000 });
+
+  initialized = true;
+  log('info', 'Lambda initialised', {
+    configSource: process.env.SSM_PARAMETER_PREFIX ? 'SSM Parameter Store' : 'environment variables',
+    sfInstanceUrl: SF_INSTANCE_URL,
+  });
+}
 
 // ─── Structured logger ────────────────────────────────────────────────────────
 // JSON lines are directly queryable in CloudWatch Logs Insights.
@@ -218,6 +251,10 @@ async function syncToSalesforce(payload) {
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 exports.handler = async (event) => {
+  // Load secrets from SSM (production) or use plain env vars (local/dev).
+  // No-op after the first invocation on a warm Lambda container.
+  await init();
+
   const failures = [];
 
   for (const record of event.Records) {
