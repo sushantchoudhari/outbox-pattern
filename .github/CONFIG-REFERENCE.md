@@ -175,12 +175,29 @@ Service location: `lambda/`
 Handler: `lambda/src/handler.js` → export `handler`
 Runtime: `nodejs20.x`
 
+### Module structure
+
+Each file has a single responsibility:
+
+| File | Responsibility |
+|------|---------------|
+| `lambda/src/handler.js` | Entry point: cold-start init, SQS record loop, batch failure reporting |
+| `lambda/src/salesforce.service.js` | Salesforce OAuth2 token caching + Case upsert |
+| `lambda/src/payload.validator.js` | Validate the parsed SNS message payload |
+| `lambda/src/errors.js` | `NonRetryableError` class, `isRetryable()`, `salesforceErrorDetail()` |
+| `lambda/src/logger.js` | Structured JSON logger (CloudWatch Logs Insights compatible) |
+| `lambda/src/config.js` | SSM Parameter Store / env loader |
+
+### Environment variables
+
 | Variable | Required | Example | Description |
 |----------|----------|---------|-------------|
 | `SALESFORCE_INSTANCE_URL` | **Yes** | `https://yourorg.my.salesforce.com` | Base URL of your Salesforce org. Must be `https://`. |
 | `SALESFORCE_CLIENT_ID` | **Yes** | `3MVG9...` | OAuth2 Connected App client ID from Salesforce Setup. |
 | `SALESFORCE_CLIENT_SECRET` | **Yes** | `abc123...` | OAuth2 Connected App client secret. **Inject via Secrets Manager — never hardcode.** |
 | `SALESFORCE_TOKEN_URL` | No | `https://login.salesforce.com/services/oauth2/token` | OAuth2 token endpoint. Default is production login. Override to `https://test.salesforce.com/services/oauth2/token` for sandbox. |
+| `HTTP_TIMEOUT_MS` | No | `10000` | Axios HTTP timeout in milliseconds. Increase for slow sandbox environments. Default: `10000`. |
+| `SSM_PARAMETER_PREFIX` | No | `/outbox-pattern/production` | When set, loads all SSM parameters under this path into `process.env` on cold start. Leave unset in local/dev. |
 
 ### Lambda deployment settings (deploy script default)
 
