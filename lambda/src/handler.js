@@ -79,7 +79,10 @@ async function init() {
   }
 
   // 5. Create the shared HTTP client once per cold start.
-  http = axios.create({ timeout: 10_000 });
+  //    HTTP_TIMEOUT_MS defaults to 10 s — override via env for envs with
+  //    slower Salesforce response times (e.g. sandboxes under load).
+  const httpTimeoutMs = parseInt(process.env.HTTP_TIMEOUT_MS || '10000', 10);
+  http = axios.create({ timeout: httpTimeoutMs });
 
   initialized = true;
   log('info', 'Lambda initialised', {
