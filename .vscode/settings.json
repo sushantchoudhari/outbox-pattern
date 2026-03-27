@@ -5,7 +5,8 @@
   "github.copilot.chat.codeGeneration.instructions": [
     { "file": "Prompt/typescript-standards.instructions.md" },
     { "file": "Prompt/node-package-preferences.instructions.md" },
-    { "file": "Prompt/express-api-architecture.instructions.md" }
+    { "file": "Prompt/express-api-architecture.instructions.md" },
+    { "file": "Prompt/code-design-principles.instructions.md" }
   ],
 
   // ─── Copilot — Test generation instructions ──────────────────────────────
