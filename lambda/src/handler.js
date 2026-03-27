@@ -1,7 +1,10 @@
 'use strict';
 
 /**
- * Salesforce Integration Consumer
+ * handler.js — Lambda Entry Point
+ * ─────────────────────────────────
+ * Responsibility: wire together config loading, SQS record iteration, and
+ * partial-batch failure reporting.  No business logic lives here.
  *
  * Triggered by SQS, which is subscribed to the SNS "application-events" topic.
  * Each SQS record body is a JSON-stringified SNS notification envelope:
@@ -12,199 +15,99 @@
  * (ReportBatchItemFailures).  Records that succeed are deleted from the queue;
  * only failed records increment their receive count and eventually route to the
  * Dead Letter Queue after maxReceiveCount (3) attempts.
+ *
+ * MODULE STRUCTURE
+ * ────────────────
+ * handler.js           ← you are here (entry point + init)
+ * salesforce.service.js  Salesforce OAuth + Case upsert
+ * payload.validator.js   Input validation
+ * errors.js              Error classes + axios error helpers
+ * logger.js              Structured JSON logger
+ * config.js              SSM Parameter Store / env loader
  */
 
-const axios = require('axios');
-const { loadConfig } = require('./config');
+const { loadConfig }       = require('./config');
+const { initService, syncToSalesforce } = require('./salesforce.service');
+const { validatePayload }  = require('./payload.validator');
+const { NonRetryableError } = require('./errors');
+const { log }              = require('./logger');
 
-// ─── Runtime state ────────────────────────────────────────────────────────────
-// These are populated during init() once SSM parameters have been loaded.
-// Declared here (at module level) so they are shared across warm invocations.
-let SF_INSTANCE_URL;
-let SF_CLIENT_ID;
-let SF_CLIENT_SECRET;
-let SF_TOKEN_URL;
-let http;
+// ─── One-time cold-start initialisation ──────────────────────────────────────
+// Lambda module-level code is synchronous, so SSM (async) cannot be called
+// there.  Instead we do a lazy async init on the first handler invocation.
+// Because Lambda reuses the execution environment across warm invocations the
+// SSM call and Salesforce config validation only happen once per cold start.
 
-// ─── Token cache ──────────────────────────────────────────────────────────────
-let cachedToken    = null;
-let tokenExpiresAt = 0;
-
-// ─── One-time initialisation ──────────────────────────────────────────────────
-// Runs once per cold start.  Subsequent invocations skip straight through.
-//
-// WHY THIS PATTERN?
-//   Lambda module-level code is synchronous, so we cannot call SSM (async)
-//   there.  Instead we do a lazy async init on the first handler invocation.
-//   Because Lambda reuses the execution environment across warm invocations,
-//   the SSM call only happens once — every subsequent call is a no-op.
 let initialized = false;
 
 async function init() {
   if (initialized) return;
 
   // 1. Load secrets from SSM Parameter Store into process.env.
-  //    In local / dev / CI (no SSM_PARAMETER_PREFIX set) this is a no-op and
-  //    the plain environment variables from Docker Compose / .env are used.
+  //    In local / dev / CI (no SSM_PARAMETER_PREFIX set) this is a no-op.
   await loadConfig();
 
-  // 2. Validate that every required variable is now present.
-  const REQUIRED_ENV = [
-    'SALESFORCE_INSTANCE_URL',
-    'SALESFORCE_CLIENT_ID',
-    'SALESFORCE_CLIENT_SECRET',
-  ];
-  for (const key of REQUIRED_ENV) {
-    if (!process.env[key]) {
-      throw new Error(`Lambda misconfiguration: missing required environment variable "${key}"`);
-    }
-  }
-
-  // 3. Read config into module-level variables so they don't need to be
-  //    re-read on every invocation.
-  SF_INSTANCE_URL  = process.env.SALESFORCE_INSTANCE_URL.replace(/\/$/, '');
-  SF_CLIENT_ID     = process.env.SALESFORCE_CLIENT_ID;
-  SF_CLIENT_SECRET = process.env.SALESFORCE_CLIENT_SECRET;
-  SF_TOKEN_URL     = process.env.SALESFORCE_TOKEN_URL
-    || 'https://login.salesforce.com/services/oauth2/token';
-
-  // 4. SSRF prevention — reject non-HTTPS or non-URL values early.
-  try {
-    const parsed = new URL(SF_INSTANCE_URL);
-    if (parsed.protocol !== 'https:') {
-      throw new Error('protocol must be https');
-    }
-  } catch (err) {
-    throw new Error(`Lambda misconfiguration: invalid SALESFORCE_INSTANCE_URL — ${err.message}`);
-  }
-
-  // 5. Create the shared HTTP client once per cold start.
-  //    HTTP_TIMEOUT_MS defaults to 10 s — override via env for envs with
-  //    slower Salesforce response times (e.g. sandboxes under load).
-  const httpTimeoutMs = parseInt(process.env.HTTP_TIMEOUT_MS || '10000', 10);
-  http = axios.create({ timeout: httpTimeoutMs });
+  // 2. Validate Salesforce config and create the shared HTTP client.
+  //    initService() throws with a clear message if required vars are missing.
+  initService();
 
   initialized = true;
   log('info', 'Lambda initialised', {
     configSource: process.env.SSM_PARAMETER_PREFIX ? 'SSM Parameter Store' : 'environment variables',
-    sfInstanceUrl: SF_INSTANCE_URL,
   });
 }
 
-// ─── Structured logger ────────────────────────────────────────────────────────
-// JSON lines are directly queryable in CloudWatch Logs Insights.
-function log(level, message, fields = {}) {
-  const entry = JSON.stringify({
-    level,
-    message,
-    ...fields,
-    ts: new Date().toISOString(),
-  });
-  if (level === 'error') {
-    console.error(entry);
-  } else {
-    console.log(entry);
-  }
-}
+// ─── Handler ──────────────────────────────────────────────────────────────────
 
-// ─── Error helpers ────────────────────────────────────────────────────────────
+exports.handler = async (event) => {
+  await init();
 
-/**
- * Thrown for errors that should not be retried (e.g. malformed payload,
- * Salesforce 4xx).  The record goes to batchItemFailures immediately; after
- * maxReceiveCount attempts it routes to the DLQ.
- */
-class NonRetryableError extends Error {
-  constructor(message, cause) {
-    super(message);
-    this.name  = 'NonRetryableError';
-    this.cause = cause;
-  }
-}
+  const failures = [];
 
-/**
- * Returns true when the error is transient and worth retrying:
- *   - Network / timeout errors (no response)
- *   - 429 Too Many Requests
- *   - 5xx server errors
- * 4xx (except 429) are non-retryable — retrying won't fix bad data.
- */
-function isRetryable(err) {
-  if (!err.response) return true;            // network error or timeout
-  if (err.response.status === 429) return true;
-  return err.response.status >= 500;
-}
+  for (const record of event.Records) {
+    try {
+      // ── Parse SQS → SNS envelope ──────────────────────────────────────────
+      let snsEnvelope;
+      try {
+        snsEnvelope = JSON.parse(record.body);
+      } catch {
+        throw new NonRetryableError('SQS record body is not valid JSON');
+      }
 
-/**
- * Extracts a human-readable error string from an axios error, including
- * the Salesforce errorCode + message arrays when present.
- */
-function salesforceErrorDetail(err) {
-  if (!err.response) return err.message;
-  const { status, data } = err.response;
-  const detail = Array.isArray(data)
-    ? data.map(e => `${e.errorCode}: ${e.message}`).join('; ')
-    : JSON.stringify(data);
-  return `HTTP ${status} — ${detail}`;
-}
+      let payload;
+      try {
+        payload = JSON.parse(snsEnvelope.Message);
+      } catch {
+        throw new NonRetryableError('SNS Message field is not valid JSON');
+      }
 
-// ─── Token acquisition ────────────────────────────────────────────────────────
+      // ── Validate and sync ─────────────────────────────────────────────────
+      validatePayload(payload);
 
-async function getSalesforceToken() {
-  if (cachedToken && Date.now() < tokenExpiresAt) {
-    return cachedToken;
+      log('info', 'Processing record', {
+        messageId:     record.messageId,
+        applicationId: payload.applicationId,
+      });
+
+      await syncToSalesforce(payload);
+
+    } catch (err) {
+      const isNonRetryable = err instanceof NonRetryableError;
+      log('error', isNonRetryable
+        ? 'Non-retryable failure — record will route to DLQ after max retries'
+        : 'Retryable failure — record will be requeued by SQS', {
+        messageId:    record.messageId,
+        error:        err.message,
+        nonRetryable: isNonRetryable,
+      });
+      failures.push({ itemIdentifier: record.messageId });
+    }
   }
 
-  const body = new URLSearchParams({
-    grant_type:    'client_credentials',
-    client_id:     SF_CLIENT_ID,
-    client_secret: SF_CLIENT_SECRET,
-  });
-
-  let data;
-  try {
-    ({ data } = await http.post(SF_TOKEN_URL, body.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    }));
-  } catch (err) {
-    // OAuth failures are typically a misconfiguration — mark non-retryable so
-    // operators are alerted via the DLQ rather than exhausting retry budget.
-    throw new NonRetryableError(
-      `Salesforce token request failed: ${salesforceErrorDetail(err)}`,
-      err,
-    );
+  if (failures.length > 0) {
+    return { batchItemFailures: failures };
   }
-
-  if (!data.access_token) {
-    throw new NonRetryableError('Salesforce token response missing access_token');
-  }
-
-  cachedToken    = data.access_token;
-  // Salesforce tokens live for 2 hours; refresh 5 minutes before expiry
-  tokenExpiresAt = Date.now() + 115 * 60 * 1000;
-  return cachedToken;
-}
-
-/** Clears the cached token so the next call fetches a fresh one. */
-function invalidateToken() {
-  cachedToken    = null;
-  tokenExpiresAt = 0;
-}
-
-// ─── Payload validation ───────────────────────────────────────────────────────
-
-function validatePayload(payload) {
-  if (typeof payload !== 'object' || payload === null) {
-    throw new NonRetryableError('SNS Message payload is not a JSON object');
-  }
-  const invalid = ['applicationId', 'applicantName', 'applicantEmail']
-    .filter(k => !payload[k] || typeof payload[k] !== 'string');
-  if (invalid.length > 0) {
-    throw new NonRetryableError(
-      `Payload missing or invalid required fields: ${invalid.join(', ')}`,
-    );
-  }
-}
+};
 
 // ─── Salesforce sync ──────────────────────────────────────────────────────────
 
