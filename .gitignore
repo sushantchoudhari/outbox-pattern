@@ -13,7 +13,6 @@ node_modules/
 .DS_Store
 
 # VS Code — ignore personal settings but keep shared config
-.vscode/settings.json
 .vscode/*.code-workspace
 
 # Logs

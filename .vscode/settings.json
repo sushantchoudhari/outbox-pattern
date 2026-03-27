@@ -1,0 +1,62 @@
+{
+  // ─── Copilot — Code generation instructions ──────────────────────────────
+  // These are loaded every time Copilot generates or edits code in this workspace.
+  // File paths are relative to the workspace root.
+  "github.copilot.chat.codeGeneration.instructions": [
+    { "file": "Prompt/typescript-standards.instructions.md" },
+    { "file": "Prompt/node-package-preferences.instructions.md" },
+    { "file": "Prompt/express-api-architecture.instructions.md" }
+  ],
+
+  // ─── Copilot — Test generation instructions ──────────────────────────────
+  // Loaded when Copilot generates test files.
+  "github.copilot.chat.testGeneration.instructions": [
+    { "file": "Prompt/jest-testing-patterns.instructions.md" }
+  ],
+
+  // ─── Copilot — Commit message instructions ───────────────────────────────
+  // Format: <type>(<scope>): <short description>
+  // Types: feat, fix, docs, refactor, test, chore
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    {
+      "text": "Use conventional commits format: <type>(<scope>): <description>. Types: feat, fix, docs, refactor, test, chore. Keep subject under 72 chars. No period at the end."
+    }
+  ],
+
+  // ─── Editor ───────────────────────────────────────────────────────────────
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+
+  // ─── TypeScript ───────────────────────────────────────────────────────────
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "typescript.updateImportsOnFileMove.enabled": "always",
+
+  // ─── Files ────────────────────────────────────────────────────────────────
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/.git": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/coverage": true
+  },
+
+  // ─── Extensions ───────────────────────────────────────────────────────────
+  "extensions.recommendations": [
+    "github.copilot",
+    "github.copilot-chat",
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "ms-azuretools.vscode-docker",
+    "humao.rest-client",
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-pg"
+  ]
+}
