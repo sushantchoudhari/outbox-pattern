@@ -4,6 +4,9 @@
 # Packages the Lambda function, deploys it to LocalStack, and wires the
 # SQS queue as its event-source.
 #
+# All configurable values are read from environment variables.
+# Copy .env.example → .env in the project root and edit as needed.
+#
 # Prerequisites:
 #   - LocalStack is running  (docker compose up localstack)
 #   - awslocal CLI installed (pip install awscli-local)
@@ -14,16 +17,41 @@
 #   ./scripts/deploy-lambda-local.sh
 set -euo pipefail
 
-REGION=us-east-1
-FUNCTION_NAME=salesforce-integration-consumer
-QUEUE_NAME=salesforce-integration-queue
-DLQ_NAME=salesforce-integration-dlq
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ── Load .env from project root if present ───────────────────
+# This lets you override any value without editing this script.
+ENV_FILE="$SCRIPT_DIR/../.env"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+  echo "Loaded config from .env"
+fi
+
+# ── Config (from env, with safe defaults) ────────────────────
+REGION="${AWS_REGION:-us-east-1}"
+FUNCTION_NAME="${LAMBDA_FUNCTION_NAME:-salesforce-integration-consumer}"
+QUEUE_NAME="${SQS_QUEUE_NAME:-salesforce-integration-queue}"
+DLQ_NAME="${SQS_DLQ_NAME:-salesforce-integration-dlq}"
+LAMBDA_TIMEOUT_VAL="${LAMBDA_TIMEOUT:-30}"
+LAMBDA_BATCH_SIZE_VAL="${LAMBDA_BATCH_SIZE:-5}"
+SF_INSTANCE_URL="${SALESFORCE_INSTANCE_URL:-https://your-instance.my.salesforce.com}"
+SF_CLIENT_ID="${SALESFORCE_CLIENT_ID:-your-client-id}"
+SF_CLIENT_SECRET="${SALESFORCE_CLIENT_SECRET:-your-client-secret}"
+SF_TOKEN_URL="${SALESFORCE_TOKEN_URL:-https://login.salesforce.com/services/oauth2/token}"
 ROLE_ARN=arn:aws:iam::000000000000:role/lambda-role     # LocalStack accepts any ARN
 ZIP_PATH=/tmp/lambda-deploy.zip
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAMBDA_DIR="$SCRIPT_DIR/../lambda"
 
 echo "=== Deploy Lambda to LocalStack ==="
+echo "    Region      : $REGION"
+echo "    Function    : $FUNCTION_NAME"
+echo "    Queue       : $QUEUE_NAME"
+echo "    DLQ         : $DLQ_NAME"
+echo "    Timeout     : ${LAMBDA_TIMEOUT_VAL}s"
+echo "    Batch size  : $LAMBDA_BATCH_SIZE_VAL"
 
 # ── 1. Install dependencies & package ────────────────────────
 echo "[1/4] Packaging Lambda…"
@@ -50,11 +78,12 @@ else
     --zip-file "fileb://$ZIP_PATH" \
     --role "$ROLE_ARN" \
     --region "$REGION" \
-    --timeout 30 \
+    --timeout "$LAMBDA_TIMEOUT_VAL" \
     --environment "Variables={ \
-      SALESFORCE_INSTANCE_URL=https://your-instance.my.salesforce.com, \
-      SALESFORCE_CLIENT_ID=your-client-id, \
-      SALESFORCE_CLIENT_SECRET=your-client-secret \
+      SALESFORCE_INSTANCE_URL=${SF_INSTANCE_URL}, \
+      SALESFORCE_CLIENT_ID=${SF_CLIENT_ID}, \
+      SALESFORCE_CLIENT_SECRET=${SF_CLIENT_SECRET}, \
+      SALESFORCE_TOKEN_URL=${SF_TOKEN_URL} \
     }" > /dev/null
 fi
 
@@ -84,7 +113,7 @@ if [[ "$EXISTING" == "None" || -z "$EXISTING" ]]; then
   awslocal lambda create-event-source-mapping \
     --function-name "$FUNCTION_NAME" \
     --event-source-arn "$QUEUE_ARN" \
-    --batch-size 5 \
+    --batch-size "$LAMBDA_BATCH_SIZE_VAL" \
     --function-response-types ReportBatchItemFailures \
     --region "$REGION" > /dev/null
   echo "    Event source mapping created"
@@ -106,3 +135,4 @@ echo ""
 echo "  awslocal sqs send-message \\"
 echo "    --queue-url $QUEUE_URL \\"
 echo "    --message-body '{\"Type\":\"Notification\",\"Message\":\"{\\\"applicationId\\\":\\\"test-123\\\",\\\"applicantName\\\":\\\"Jane Doe\\\",\\\"applicantEmail\\\":\\\"jane@example.com\\\",\\\"data\\\":{}}\" }'"
+

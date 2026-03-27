@@ -34,10 +34,18 @@ services:
     image: public.ecr.aws/localstack/localstack:3
     environment:
       - SERVICES=sns,sqs,lambda
-      - DEFAULT_REGION=us-east-1
+      - DEFAULT_REGION=${AWS_REGION:-us-east-1}
       - DEBUG=0
       - LAMBDA_EXECUTOR=local
       - PERSISTENCE=0
+      # These are passed to init-aws.sh so queue/topic names and
+      # SQS settings can be changed via .env without editing scripts.
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - SNS_TOPIC_NAME=${SNS_TOPIC_NAME:-application-events}
+      - SQS_QUEUE_NAME=${SQS_QUEUE_NAME:-salesforce-integration-queue}
+      - SQS_DLQ_NAME=${SQS_DLQ_NAME:-salesforce-integration-dlq}
+      - SQS_VISIBILITY_TIMEOUT=${SQS_VISIBILITY_TIMEOUT:-30}
+      - SQS_MAX_RECEIVE_COUNT=${SQS_MAX_RECEIVE_COUNT:-3}
     ports:
       - "4566:4566"
     volumes:
@@ -87,12 +95,12 @@ services:
       DB_USER: postgres
       DB_PASSWORD: postgres
       SNS_ENDPOINT: http://localstack:4566
-      SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:application-events
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      POLL_INTERVAL_MS: 5000
-      BATCH_SIZE: 10
+      SNS_TOPIC_ARN: arn:aws:sns:${AWS_REGION:-us-east-1}:000000000000:${SNS_TOPIC_NAME:-application-events}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-5000}
+      BATCH_SIZE: ${BATCH_SIZE:-10}
 
 volumes:
   postgres_data:

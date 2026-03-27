@@ -2,16 +2,31 @@
 # LocalStack initialisation script.
 # Runs inside the LocalStack container when it reaches "ready" state.
 # Creates: DLQ → SQS Queue (with redrive) → SNS Topic → SNS→SQS subscription
+#
+# All values are read from environment variables injected by docker-compose.
+# Defaults match .env.example so the script works even without explicit config.
 set -euo pipefail
 
-REGION=us-east-1
+# ── Config (from env, with safe defaults) ────────────────────
+REGION="${AWS_REGION:-us-east-1}"
+QUEUE_NAME="${SQS_QUEUE_NAME:-salesforce-integration-queue}"
+DLQ_NAME="${SQS_DLQ_NAME:-salesforce-integration-dlq}"
+VISIBILITY_TIMEOUT="${SQS_VISIBILITY_TIMEOUT:-30}"
+MAX_RECEIVE_COUNT="${SQS_MAX_RECEIVE_COUNT:-3}"
+TOPIC_NAME="${SNS_TOPIC_NAME:-application-events}"
 
 echo "=== LocalStack init: creating SNS + SQS resources ==="
+echo "    Region            : $REGION"
+echo "    SNS topic         : $TOPIC_NAME"
+echo "    Queue             : $QUEUE_NAME"
+echo "    DLQ               : $DLQ_NAME"
+echo "    VisibilityTimeout : ${VISIBILITY_TIMEOUT}s"
+echo "    MaxReceiveCount   : $MAX_RECEIVE_COUNT"
 
 # ── 1. Dead Letter Queue ─────────────────────────────────────
 echo "[1/5] Creating Dead Letter Queue..."
 DLQ_URL=$(awslocal sqs create-queue \
-  --queue-name salesforce-integration-dlq \
+  --queue-name "$DLQ_NAME" \
   --region "$REGION" \
   --query 'QueueUrl' --output text)
 
@@ -27,16 +42,16 @@ echo "    DLQ ARN : $DLQ_ARN"
 # ── 2. Main SQS Queue with redrive policy ────────────────────
 echo "[2/5] Creating main SQS Queue..."
 QUEUE_URL=$(awslocal sqs create-queue \
-  --queue-name salesforce-integration-queue \
+  --queue-name "$QUEUE_NAME" \
   --region "$REGION" \
   --query 'QueueUrl' --output text)
 
 # Set VisibilityTimeout and RedrivePolicy separately to avoid CLI quoting issues
-REDRIVE_JSON="{\"deadLetterTargetArn\":\"${DLQ_ARN}\",\"maxReceiveCount\":\"3\"}"
+REDRIVE_JSON="{\"deadLetterTargetArn\":\"${DLQ_ARN}\",\"maxReceiveCount\":\"${MAX_RECEIVE_COUNT}\"}"
 awslocal sqs set-queue-attributes \
   --queue-url "$QUEUE_URL" \
   --region "$REGION" \
-  --attributes VisibilityTimeout=30
+  --attributes "VisibilityTimeout=${VISIBILITY_TIMEOUT}"
 
 printf '%s' "$REDRIVE_JSON" > /tmp/redrive.json
 awslocal sqs set-queue-attributes \
@@ -60,7 +75,7 @@ echo "    Queue ARN : $QUEUE_ARN"
 # ── 3. SNS Topic ─────────────────────────────────────────────
 echo "[3/5] Creating SNS Topic..."
 SNS_TOPIC_ARN=$(awslocal sns create-topic \
-  --name application-events \
+  --name "$TOPIC_NAME" \
   --region "$REGION" \
   --query 'TopicArn' --output text)
 
