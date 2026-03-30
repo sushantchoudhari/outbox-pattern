@@ -16,6 +16,17 @@ services:
       timeout: 5s
       retries: 12
 
+  # ── Session Store (ElastiCache Redis in production) ──────────
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   # Run migrations once after postgres is healthy
   migrate:
     image: public.ecr.aws/docker/library/postgres:15-alpine

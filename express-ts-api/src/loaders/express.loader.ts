@@ -9,10 +9,11 @@
  *   2. Performance  — compression
  *   3. Body parsing — json, urlencoded
  *   4. Request ID   — must run before logging so req.id is available
- *   5. Routes       — health + versioned API routes
- *   6. Swagger       — served last among routes (non-prod only)
- *   7. 404 handler  — after all routes so it only fires for unmatched paths
- *   8. Error handler — must be the VERY LAST middleware (4-arg signature)
+ *   5. Session      — Redis-backed; shared across all ECS tasks
+ *   6. Routes       — health + versioned API routes
+ *   7. Swagger       — served last among routes (non-prod only)
+ *   8. 404 handler  — after all routes so it only fires for unmatched paths
+ *   9. Error handler — must be the VERY LAST middleware (4-arg signature)
  */
 
 import express, { Application } from 'express';
@@ -25,11 +26,15 @@ import { config } from '../config';
 import { requestId } from '../middlewares/requestId.middleware';
 import { notFound } from '../middlewares/notFound.middleware';
 import { errorHandler } from '../middlewares/error.middleware';
+import { buildSessionMiddleware } from '../session/session.loader';
 import authRoutes from '../modules/auth/auth.routes';
 import userRoutes from '../modules/user/user.routes';
 import { setupSwagger } from '../docs/swagger';
 
-export function loadExpress(app: Application): void {
+export function loadExpress(app: Application): void {  // Trust the outermost proxy (ALB) so that:
+  //   • req.ip reflects the client IP from X-Forwarded-For
+  //   • cookie.secure is honoured when the ALB terminates TLS
+  app.set('trust proxy', 1);
   // ── 1. Security headers ──────────────────────────────────────────────────
   app.use(helmet());
   app.use(cors({ origin: config.cors.origin, methods: ['GET', 'POST', 'PATCH', 'DELETE'] }));
@@ -53,7 +58,13 @@ export function loadExpress(app: Application): void {
   // ── 4. Request ID ─────────────────────────────────────────────────────────
   app.use(requestId);
 
-  // ── 5. Routes ─────────────────────────────────────────────────────────────
+  // ── 5. Session (Redis-backed, shared across all ECS tasks) ────────────────
+  // Must run after body parsing so session data is available to every route.
+  // The session store is ElastiCache Redis in production, so any ECS task
+  // that receives a request can look up the same session via its sessionId.
+  app.use(buildSessionMiddleware());
+
+  // ── 6. Routes ─────────────────────────────────────────────────────────────
   app.get('/api/health', (_req, res) => {
     res.json({
       success: true,

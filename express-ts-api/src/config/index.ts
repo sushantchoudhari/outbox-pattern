@@ -59,6 +59,13 @@ const envSchema = z.object({
 
   // Database — optional; app runs in-memory when omitted
   DATABASE_URL: z.string().optional(),
+
+  // Redis — session store (ElastiCache in production, local Redis in development)
+  REDIS_URL: z.string().default('redis://localhost:6379'),
+
+  // Session
+  SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
+  SESSION_MAX_AGE_MS: z.string().regex(/^\d+$/).default('86400000'), // 24 h
 });
 
 // ─── Validate ─────────────────────────────────────────────────────────────────
@@ -103,6 +110,15 @@ export const config = {
 
   db: {
     url: env.DATABASE_URL,
+  },
+
+  redis: {
+    url: env.REDIS_URL,
+  },
+
+  session: {
+    secret:   env.SESSION_SECRET,
+    maxAgeMs: parseInt(env.SESSION_MAX_AGE_MS, 10),
   },
 
   // Convenience booleans used throughout the codebase
