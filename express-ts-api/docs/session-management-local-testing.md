@@ -6,48 +6,81 @@ This guide explains how to run and test the Redis-backed session management laye
 
 ## How the Session System Works
 
+The diagram below maps directly to the production architecture (Client → ALB → ECS tasks → ElastiCache Redis). Step numbers match the architecture diagram.
+
 ```
-Browser                     Express                       Redis (ElastiCache)
-   │                            │                                │
-   │  POST /auth/login           │                                │
-   │ ─────────────────────────► │                                │
-   │                            │  session.set(userId, role,     │
-   │                            │    csrfToken) ─────────────► │
-   │                            │                                │
-   │  ◄──────────────────────── │  200 { token, csrfToken }     │
-   │  Set-Cookie: sid=<signed>  │                                │
-   │                            │                                │
-   │  PATCH /users/:id           │                                │
-   │  Cookie: sid=<signed>       │                                │
-   │  X-CSRF-Token: <hex>        │                                │
-   │ ─────────────────────────► │                                │
-   │                            │  session.get(sid) ──────────► │
-   │                            │  ◄─────── { userId, csrfToken }│
-   │                            │  validate csrfToken            │
-   │  ◄──────────────────────── │  200 { updated user }         │
-   │                            │                                │
-   │  POST /auth/logout          │                                │
-   │ ─────────────────────────► │                                │
-   │                            │  session.destroy(sid) ──────► │
-   │  ◄──────────────────────── │  204 No Content               │
-   │  Clear-Cookie: sid          │                                │
+Client (React)     ALB           ECS Task A/B/C        ElastiCache Redis
+      │             │                  │                       │
+      │  1. HTTPS   │                  │                       │
+      │  POST /login│                  │                       │
+      │ ──────────► │  2. Route to     │                       │
+      │             │  healthy task ──►│                       │
+      │             │                  │  3. SET sess:xyz      │
+      │             │                  │  (userId, role,       │
+      │             │                  │  loginAt, csrfToken,  │
+      │             │                  │  permissions) ──────► │
+      │             │                  │                       │
+      │  6. Response + Set-Cookie: sid=xyz (sessionId only)    │
+      │ ◄────────── │ ◄─────────────── │                       │
+      │             │                  │                       │
+      │  Cookie: sid=xyz               │                       │
+      │  GET /users │                  │                       │
+      │ ──────────► │  4. Subsequent   │                       │
+      │             │  request may ───►│ (Task B or C)         │
+      │             │  route to        │  5. GET sess:xyz ───► │
+      │             │  another task    │  ◄── same session ─── │
+      │  6. Response│                  │                       │
+      │ ◄────────── │ ◄─────────────── │                       │
+      │             │                  │                       │
+      │  POST /logout                  │                       │
+      │ ──────────► │ ────────────────►│  DEL sess:xyz ──────► │
+      │  204 + Clear-Cookie: sid       │                       │
+      │ ◄────────── │ ◄─────────────── │                       │
 ```
 
-### What is stored in Redis
+---
 
-Each login creates one Redis key:
+## Session Principles
+
+These three principles, shown in the architecture diagram, define how the session layer works:
+
+### 1. Cookie stores sessionId only
+
+The `sid` cookie contains **only a signed session ID** — never the session data itself.
+
+| Cookie attribute | Value | Why |
+|---|---|---|
+| Name | `sid` | Hides the session library from clients |
+| Content | Signed session ID (pointer to Redis key) | Session data never leaves the server |
+| `Secure` | `true` in production, `false` locally | HTTPS-only in production (behind ALB) |
+| `HttpOnly` | `true` | JavaScript cannot read the cookie — XSS defence |
+| `SameSite` | `strict` | Browser only sends cookie on same-origin requests — CSRF defence |
+| `maxAge` | `SESSION_MAX_AGE_MS` (default 24 h) | Controlled expiry |
+
+### 2. ECS tasks remain stateless — no task-local session dependency
+
+No session data is stored in the Node.js process memory. Every task reads and writes session data through Redis, so:
+- Any task can handle any request from any browser.
+- Tasks can be stopped, restarted, or scaled without losing sessions.
+- The ALB needs no sticky sessions / session affinity.
+
+### 3. Session state stored in ElastiCache for Redis
+
+Each login writes one key to Redis with the full session context:
 
 ```
 Key:   sess:<session-id>
 Value: {
-  "cookie": { "httpOnly": true, "sameSite": "strict", "maxAge": 86400000 },
-  "userId":    "<user-uuid>",
-  "role":      "user" | "admin",
-  "loginAt":   1743000000000,
-  "csrfToken": "<64-byte hex string>"
+  "cookie":    { "httpOnly": true, "sameSite": "strict", "maxAge": 86400000 },
+  "userId":    "<uuid>",           ← user context
+  "role":      "user" | "admin",  ← permissions
+  "loginAt":   1743000000000,      ← timestamp
+  "csrfToken": "<64-byte hex>"    ← CSRF linkage
 }
 TTL: SESSION_MAX_AGE_MS (default 24 hours)
 ```
+
+
 
 ### CSRF token flow
 
@@ -293,9 +326,11 @@ Browser
    │  401 Unauthorized ◄──────────────── │
 ```
 
-### Setup — start two API instances
+### Setup — start three API instances (simulating Tasks A, B, C)
 
-Both instances must share the **same `SESSION_SECRET`** (so the signed `sid` cookie is trusted by both), the same `REDIS_URL`, and the same `JWT_SECRET`.
+The architecture diagram shows three ECS tasks (A, B, C) behind the ALB. Locally, three API processes on different ports simulate this. The ports replace the ALB's routing — send a request to any port and it resolves the same session from Redis.
+
+All instances must share the **same `SESSION_SECRET`** (so the signed `sid` cookie is trusted by all), the same `REDIS_URL`, and the same `JWT_SECRET`.
 
 **Terminal 1 — Task A on port 3000**
 ```bash
@@ -311,11 +346,19 @@ PORT=3001 npm run dev
 # Logs: Server started port: 3001
 ```
 
-Confirm both are up:
+**Terminal 3 — Task C on port 3002**
+```bash
+cd /private/tmp/outbox-pattern/express-ts-api
+PORT=3002 npm run dev
+# Logs: Server started port: 3002
+```
+
+Confirm all three are up:
 ```bash
 curl -s http://localhost:3000/api/health | grep '"status"'
 curl -s http://localhost:3001/api/health | grep '"status"'
-# Both should return: "status":"ok"
+curl -s http://localhost:3002/api/health | grep '"status"'
+# All three should return: "status":"ok"
 ```
 
 ### Test 1 — Login on Task A, authenticated request on Task B
@@ -346,7 +389,9 @@ docker compose exec redis redis-cli keys "sess:*"
 # → exactly ONE key, created by Task A, readable by Task B
 ```
 
-### Test 2 — Logout on Task A invalidates session on Task B
+### Test 2 — Logout on Task A invalidates session on Task B and Task C
+
+This maps to step 4 in the architecture diagram: a subsequent request routed to a **different** task after the session has been destroyed must be rejected.
 
 **Step 1 — Logout via Task A:**
 ```bash
@@ -367,7 +412,13 @@ curl -s -b /tmp/cookies.txt http://localhost:3001/api/v1/auth/logout | python3 -
 # Expected: 401 { "message": "Session expired or not found — please log in again" }
 ```
 
-This proves Task B correctly rejects the session after Task A destroyed it in Redis.
+**Step 4 — Same result on Task C:**
+```bash
+curl -s -b /tmp/cookies.txt http://localhost:3002/api/v1/auth/logout | python3 -m json.tool
+# Expected: 401 — same rejection, session is gone from Redis
+```
+
+This proves all three tasks correctly reject the session after any one of them destroys it in Redis.
 
 ### Test 3 — What breaks with mismatched SESSION_SECRET
 
@@ -401,12 +452,14 @@ Open two terminal tabs and run `monitor` on Redis — you'll see `GET`/`SET`/`DE
 docker compose exec redis redis-cli monitor
 ```
 
-Example output:
+Example output showing all three tasks (ports = Task A/B/C):
 ```
-1743000001.123  [0 127.0.0.1:52410] "SET" "sess:abc" "..." "EX" "86400"  # port 3000 login
-1743000002.456  [0 127.0.0.1:52411] "GET" "sess:abc"                      # port 3001 request
-1743000003.789  [0 127.0.0.1:52410] "DEL" "sess:abc"                      # port 3000 logout
-1743000004.012  [0 127.0.0.1:52411] "GET" "sess:abc"                      # port 3001 → nil (401)
+1743000001.123  [0 127.0.0.1:52410] "SET" "sess:abc" "..." "EX" "86400"  # Task A (3000) login
+1743000002.456  [0 127.0.0.1:52411] "GET" "sess:abc"                      # Task B (3001) request → ✅ found
+1743000003.111  [0 127.0.0.1:52412] "GET" "sess:abc"                      # Task C (3002) request → ✅ found
+1743000004.789  [0 127.0.0.1:52410] "DEL" "sess:abc"                      # Task A (3000) logout
+1743000005.012  [0 127.0.0.1:52411] "GET" "sess:abc"                      # Task B (3001) → nil (401)
+1743000006.234  [0 127.0.0.1:52412] "GET" "sess:abc"                      # Task C (3002) → nil (401)
 ```
 
 ---
