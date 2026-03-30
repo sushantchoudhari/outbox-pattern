@@ -1,74 +1,29 @@
 /**
- * config/index.ts — Environment Configuration
- * ─────────────────────────────────────────────
- * This is the single source of truth for all environment variables.
+ * config/index.ts — Step 3: Validate + Export Application Config
+ * ───────────────────────────────────────────────────────────────
+ * Orchestrates the three-step configuration pipeline:
  *
- * HOW IT WORKS:
- *   1. Reads NODE_ENV to determine which .env file to load
- *      (.env.development, .env.testing, .env.preprod, .env.production).
- *   2. Parses and validates every required variable with Zod.
- *   3. If any variable is missing or invalid, logs the problems and
- *      calls process.exit(1) — the app won't start with bad config.
+ *   Step 1 — env.loader.ts   Load the correct .env file into process.env
+ *   Step 2 — env.schema.ts   Declare what every variable must look like (Zod)
+ *   Step 3 — here            Validate process.env against the schema,
+ *                             then export a typed, shaped config object
  *
  * WHY FAIL FAST?
  *   Discovering a missing JWT_SECRET three hours after deployment is far worse
  *   than a clear startup error that pinpoints exactly what is wrong.
+ *
+ * All other modules import from this file — they never read process.env directly.
  */
 
-import * as dotenv from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
-import { z } from 'zod';
+import { loadEnvFile } from './env.loader';
+import { envSchema } from './env.schema';
 
-// ─── Load the correct .env file ───────────────────────────────────────────────
+// ─── Step 1: Load .env file ───────────────────────────────────────────────────
+// Must run before safeParse so that process.env is fully populated.
 
-const nodeEnv = process.env['NODE_ENV'] ?? 'development';
-const envFile = path.resolve(__dirname, '../..', `.env.${nodeEnv}`);
+const loadedFrom = loadEnvFile();
 
-if (fs.existsSync(envFile)) {
-  dotenv.config({ path: envFile });
-} else {
-  // Fall back to a generic .env if the environment-specific file doesn't exist.
-  dotenv.config();
-}
-
-// ─── Env schema ───────────────────────────────────────────────────────────────
-
-const envSchema = z.object({
-  NODE_ENV: z
-    .enum(['development', 'testing', 'preprod', 'production'])
-    .default('development'),
-
-  PORT: z.string().regex(/^\d+$/, 'PORT must be a numeric string').default('3000'),
-
-  // Auth
-  JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
-  JWT_EXPIRES_IN: z.string().default('1d'),
-
-  // Rate limiting
-  RATE_LIMIT_WINDOW_MS: z.string().regex(/^\d+$/).default('900000'),
-  RATE_LIMIT_MAX: z.string().regex(/^\d+$/).default('100'),
-
-  // CORS
-  CORS_ORIGIN: z.string().default('*'),
-
-  // Logging — 'silent' suppresses all output (used in tests)
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .default('info'),
-
-  // Database — optional; app runs in-memory when omitted
-  DATABASE_URL: z.string().optional(),
-
-  // Redis — session store (ElastiCache in production, local Redis in development)
-  REDIS_URL: z.string().default('redis://localhost:6379'),
-
-  // Session
-  SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
-  SESSION_MAX_AGE_MS: z.string().regex(/^\d+$/).default('86400000'), // 24 h
-});
-
-// ─── Validate ─────────────────────────────────────────────────────────────────
+// ─── Step 2 + 3: Validate process.env against the schema ─────────────────────
 
 const parsed = envSchema.safeParse(process.env);
 
@@ -78,13 +33,14 @@ if (!parsed.success) {
   for (const issue of parsed.error.issues) {
     console.error(`   • ${issue.path.join('.')}: ${issue.message}`);
   }
-  console.error(`\n   Loaded from: ${fs.existsSync(envFile) ? envFile : '.env (fallback)'}\n`);
+  console.error(`\n   Loaded from: ${loadedFrom}\n`);
   process.exit(1);
 }
 
 const env = parsed.data;
 
-// ─── Exported config object ───────────────────────────────────────────────────
+// ─── Step 4: Export a shaped, typed config object ────────────────────────────
+// The rest of the codebase imports `config` — never process.env directly.
 
 export const config = {
   env:  env.NODE_ENV,
@@ -127,3 +83,4 @@ export const config = {
   isPreprod:     env.NODE_ENV === 'preprod',
   isProduction:  env.NODE_ENV === 'production',
 } as const;
+
