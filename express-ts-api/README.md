@@ -13,9 +13,9 @@ cd express-ts-api
 # Install dependencies
 npm install
 
-# Copy env file and set a strong JWT_SECRET
+# Copy env file and fill in required secrets
 cp .env.example .env.development
-# Edit .env.development → set JWT_SECRET to a 32+ char random string
+# Edit .env.development — set JWT_SECRET and SESSION_SECRET (both min 32 chars)
 
 # Start development server (auto-restarts on file changes)
 npm run dev
@@ -56,9 +56,10 @@ All routes are prefixed with `/api`.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/v1/auth/register` | No | Create account + receive JWT |
-| POST | `/api/v1/auth/login` | No | Verify credentials + receive JWT |
+| POST | `/api/v1/auth/register` | No | Create account → sets Redis session + returns JWT + `csrfToken` |
+| POST | `/api/v1/auth/login` | No | Verify credentials → sets Redis session + returns JWT + `csrfToken` |
 | GET | `/api/v1/auth/me` | Bearer | Get logged-in user profile |
+| POST | `/api/v1/auth/logout` | Session cookie | Destroy Redis session + clear `sid` cookie |
 
 ### Users
 
@@ -78,12 +79,28 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"name":"Alice","email":"alice@example.com","password":"secret123"}'
 
-# Login — copy the token from the response
+# Login — save the session cookie (-c) and note the csrfToken in the response body
 curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
+  -c cookies.txt \
   -d '{"email":"alice@example.com","password":"secret123"}'
 
-# Use the token
+# Use session cookie for a GET (no CSRF header needed)
+curl http://localhost:3000/api/v1/users \
+  -b cookies.txt
+
+# Use session + CSRF header for a mutation
+curl -X PATCH http://localhost:3000/api/v1/users/<id> \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: <csrfToken from login response>" \
+  -b cookies.txt \
+  -d '{"name":"Alice Updated"}'
+
+# Logout — destroys the Redis session
+curl -X POST http://localhost:3000/api/v1/auth/logout \
+  -b cookies.txt
+
+# JWT Bearer (API clients / mobile)
 curl http://localhost:3000/api/v1/auth/me \
   -H "Authorization: Bearer <your-token>"
 ```
@@ -101,8 +118,13 @@ src/
 │   └── index.ts                Zod-validated env config, fails startup on bad env
 │
 ├── loaders/
-│   ├── index.ts                Orchestrates startup (DB → Express)
-│   └── express.loader.ts       Registers all middleware and routes
+│   ├── index.ts                Orchestrates startup (DB → Redis → Express)
+│   ├── express.loader.ts       Registers all middleware and routes
+│   └── redis.loader.ts         Opens Redis connection, sends PING, fails fast
+│
+├── session/
+│   ├── redisClient.ts          node-redis v4 singleton with error/reconnect logging
+│   └── session.loader.ts       Builds express-session middleware (RedisStore + cookie flags)
 │
 ├── common/
 │   ├── errors/
@@ -113,21 +135,22 @@ src/
 │   │   ├── logger.ts           Pino JSON logger (pretty in dev, JSON in prod)
 │   │   └── response.helper.ts  ok(), created(), noContent() response helpers
 │   └── types/
-│       └── express.d.ts        Augments Request with req.id and req.user
+│       └── express.d.ts        Augments Request with req.id, req.user, and SessionData
 │
 ├── middlewares/
-│   ├── auth.middleware.ts       authenticate (JWT) + authorize (role guard)
-│   ├── error.middleware.ts      Central 4-arg error handler
-│   ├── notFound.middleware.ts   404 catch-all
-│   ├── requestId.middleware.ts  UUID per-request tracing
-│   └── validate.middleware.ts   Zod schema validation factory
+│   ├── auth.middleware.ts           authenticate (JWT) + authorize (role guard)
+│   ├── sessionAuth.middleware.ts    authenticateSession + authorizeSession + csrfProtect
+│   ├── error.middleware.ts          Central 4-arg error handler
+│   ├── notFound.middleware.ts       404 catch-all
+│   ├── requestId.middleware.ts      UUID per-request tracing
+│   └── validate.middleware.ts       Zod schema validation factory
 │
 ├── modules/
 │   ├── auth/
 │   │   ├── auth.schema.ts       Zod: registerSchema, loginSchema
 │   │   ├── auth.service.ts      register(), login(), profile()
-│   │   ├── auth.controller.ts   HTTP handlers forwarding to service
-│   │   └── auth.routes.ts       Route definitions
+│   │   ├── auth.controller.ts   login/register populate Redis session; logout destroys it
+│   │   └── auth.routes.ts       Route definitions (includes POST /logout)
 │   └── user/
 │       ├── user.model.ts        User interface, buildUser(), sanitizeUser()
 │       ├── user.schema.ts       Zod: createUserSchema, updateUserSchema, idParamSchema
@@ -140,7 +163,8 @@ src/
 │   └── index.ts                 PostgreSQL pool template (commented out)
 │
 └── docs/
-    └── swagger.ts               OpenAPI 3.0 spec + swagger-ui-express setup
+    ├── swagger.ts               OpenAPI 3.0 spec + swagger-ui-express setup
+    └── SESSION.md               Full session management documentation
 
 tests/
 ├── setup.ts                     Sets test env vars before every test file
@@ -162,7 +186,17 @@ HTTP Request
  (security, rate limit, body parser, requestId)
      │
      ▼
+ Session middleware  ──── RedisStore ──── ElastiCache Redis
+ (express-session)        look-up
+     │
+     ▼
   Validator  ──── Zod schema ──── 422 on failure
+     │
+     ▼
+ authenticateSession / authenticate (JWT)
+     │
+     ▼
+ csrfProtect (on mutations)   authorizeSession / authorize (roles)
      │
      ▼
  Controller  ──── reads req, calls service, sends response
@@ -206,6 +240,24 @@ invalid values cause an immediate startup failure with a clear error message.
 | `CORS_ORIGIN` | `*` | Allowed CORS origin |
 | `LOG_LEVEL` | `info` | fatal/error/warn/info/debug/trace/silent |
 | `DATABASE_URL` | — | Optional. Leave empty for in-memory store. |
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL. Use ElastiCache endpoint in production. |
+| `SESSION_SECRET` | — | **Required.** Min 32 chars. Signs the session cookie. |
+| `SESSION_MAX_AGE_MS` | `86400000` | Session and cookie TTL in milliseconds (default 24 h). |
+
+---
+
+## Session management
+
+Session state is shared across ECS task replicas via **ElastiCache for Redis**. Any ECS task that receives a browser request can look up the same session and continue the user journey without sticky sessions.
+
+See [docs/SESSION.md](docs/SESSION.md) for:
+- End-to-end login / logout flow
+- Cookie security flags (httpOnly, secure, sameSite, expiry)
+- What is stored in Redis (`userId`, `role`, `loginAt`, `csrfToken`)
+- CSRF two-layer protection design
+- `authenticateSession`, `authorizeSession`, `csrfProtect` middleware usage
+- Local Redis setup and session inspection commands
+- ElastiCache production deployment checklist
 
 ---
 

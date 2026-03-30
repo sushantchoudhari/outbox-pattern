@@ -266,8 +266,9 @@ This single command will:
 1. Start **PostgreSQL 15** and wait until it is healthy.
 2. Run the **migration** container to apply `001_init.sql`.
 3. Start **LocalStack** and execute `localstack/init-aws.sh` to create SNS/SQS resources.
-4. Build and start the **API** service (port 3000).
-5. Build and start the **Worker** service (polls every 5 s).
+4. Start **Redis 7** (session store for `express-ts-api`).
+5. Build and start the **API** service (port 3000).
+6. Build and start the **Worker** service (polls every 5 s).
 
 Expected healthy output:
 ```
@@ -656,6 +657,7 @@ Inspect DLQ messages to understand the root cause, fix the Lambda, then redrive 
 ```
 outbox-pattern/
 ├── docker-compose.yml              # Full local stack definition
+│                                   # (postgres, redis, localstack, api, worker)
 │
 ├── api/                            # Applicant API service
 │   ├── Dockerfile
@@ -663,21 +665,41 @@ outbox-pattern/
 │   └── src/
 │       ├── index.js                # Express app entry point
 │       ├── db.js                   # PostgreSQL connection pool
-│       └── routes/
-│           └── applications.js     # POST /applications, GET /applications/:id
+│       ├── routes/
+│       │   ├── applications.js     # POST /applications, GET /applications/:id
+│       │   └── health.js           # GET /health
+│       └── modules/applications/
+│           ├── applications.repository.js  # SQL queries only
+│           ├── applications.service.js     # Transaction orchestration
+│           └── applications.controller.js  # HTTP handlers
 │
 ├── worker/                         # Outbox publisher worker
 │   ├── Dockerfile
 │   ├── package.json
 │   └── src/
 │       ├── index.js                # Poll loop entry point
+│       ├── config.js               # SSM / env configuration loader
 │       ├── db.js                   # PostgreSQL connection pool
-│       └── outboxPublisher.js      # Core publish logic (FOR UPDATE SKIP LOCKED)
+│       ├── snsClient.js            # SNS client singleton
+│       ├── outboxRepository.js     # SQL queries against outbox_events
+│       ├── snsPublisher.js         # SNS publish logic
+│       └── outboxPublisher.js      # Transaction coordinator
 │
 ├── lambda/                         # Salesforce integration consumer
 │   ├── package.json
 │   └── src/
-│       └── handler.js              # SQS-triggered Lambda; upserts Salesforce Cases
+│       ├── handler.js              # SQS-triggered Lambda entry point
+│       ├── config.js               # SSM Parameter Store loader
+│       ├── salesforce.service.js   # OAuth token cache + Case upsert
+│       ├── payload.validator.js    # SNS envelope validation
+│       ├── errors.js               # Typed errors + retryability
+│       └── logger.js               # Structured JSON logger
+│
+├── express-ts-api/                 # Reference TypeScript + Express API
+│   ├── README.md                   # Full API documentation
+│   └── docs/
+│       ├── swagger.ts              # OpenAPI 3.0 spec
+│       └── SESSION.md              # Redis session management documentation
 │
 ├── migrations/
 │   └── 001_init.sql                # Creates applications + outbox_events tables + index
