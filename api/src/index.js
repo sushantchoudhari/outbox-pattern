@@ -14,18 +14,14 @@
  */
 
 const express = require('express');
+const healthRouter = require('./routes/health');
 const applicationsRouter = require('./routes/applications');
 
 const app = express();
 
-// Parse incoming JSON request bodies and make them available as req.body.
 app.use(express.json());
 
-// Simple health check — returns 200 as long as the process is alive.
-// Used by Docker health checks, Kubernetes liveness probes, and load balancers.
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-
-// All /applications routes are handled by the applications router.
+app.use('/health',       healthRouter);
 app.use('/applications', applicationsRouter);
 
 const PORT = process.env.PORT || 3000;
