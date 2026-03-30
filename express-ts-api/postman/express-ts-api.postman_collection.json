@@ -1,0 +1,438 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Express TS API",
+    "description": "Complete API collection for the Express TypeScript API.\n\n### Quick Start\n1. Set the `base_url` collection variable to your server URL (default: `http://localhost:3000`).\n2. Run **Auth → Register** or **Auth → Login** — the `token`, `csrf_token`, and `user_id` variables are captured automatically by the built-in test scripts.\n3. All protected endpoints pick up `{{token}}` from the Bearer Auth header automatically.\n\n### Collection Variables\n| Variable | Description |\n|---|---|\n| `base_url` | API base URL (default: `http://localhost:3000`) |\n| `token` | JWT Bearer token – auto-set on Register / Login |\n| `csrf_token` | CSRF token – auto-set on Register / Login |\n| `user_id` | Last created / logged-in user UUID – auto-set |",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url",    "value": "http://localhost:3000", "type": "string" },
+    { "key": "token",       "value": "",                      "type": "string" },
+    { "key": "csrf_token",  "value": "",                      "type": "string" },
+    { "key": "user_id",     "value": "",                      "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health"]
+            },
+            "description": "Service liveness check. Public — no authentication required.\n\nReturns server uptime (seconds) and the current `NODE_ENV` value."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"status\": \"ok\",\n    \"uptime\": 123.45,\n    \"env\": \"development\"\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  pm.collectionVariables.set('token',      json.data.token);",
+                  "  pm.collectionVariables.set('csrf_token', json.data.csrfToken);",
+                  "  pm.collectionVariables.set('user_id',    json.data.user.id);",
+                  "  console.log('Captured: token, csrf_token, user_id');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Alice Example\",\n  \"email\": \"alice@example.com\",\n  \"password\": \"secret1234\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            },
+            "description": "Create a new user account. Public — no authentication required.\n\nOn success the test script automatically captures `token`, `csrf_token`, and `user_id` into collection variables.\n\n**Request body**\n| Field | Required | Rules |\n|---|---|---|\n| `name` | ✅ | 2 – 100 characters |\n| `email` | ✅ | Valid email address |\n| `password` | ✅ | Minimum 8 characters |\n\n**Errors**\n- `409 Conflict` — email already registered\n- `422 Unprocessable Entity` — validation failure"
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"user\": {\n      \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n      \"name\": \"Alice Example\",\n      \"email\": \"alice@example.com\",\n      \"role\": \"user\",\n      \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-01T00:00:00.000Z\"\n    },\n    \"token\": \"<JWT>\",\n    \"csrfToken\": \"<hex-string>\"\n  }\n}"
+            },
+            {
+              "name": "409 Conflict — Email already taken",
+              "status": "Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": {\n    \"statusCode\": 409,\n    \"message\": \"Email already in use\"\n  }\n}"
+            },
+            {
+              "name": "422 Unprocessable Entity — Validation failure",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": {\n    \"statusCode\": 422,\n    \"message\": \"Validation failed\",\n    \"details\": [\n      { \"path\": \"password\", \"message\": \"String must contain at least 8 character(s)\" }\n    ]\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  pm.collectionVariables.set('token',      json.data.token);",
+                  "  pm.collectionVariables.set('csrf_token', json.data.csrfToken);",
+                  "  pm.collectionVariables.set('user_id',    json.data.user.id);",
+                  "  console.log('Captured: token, csrf_token, user_id');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"alice@example.com\",\n  \"password\": \"secret1234\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            },
+            "description": "Authenticate with email and password. Public — no authentication required.\n\nOn success the test script automatically captures `token`, `csrf_token`, and `user_id` into collection variables.\n\n**Request body**\n| Field | Required |\n|---|---|\n| `email` | ✅ |\n| `password` | ✅ |\n\n**Errors**\n- `401 Unauthorized` — wrong email or password\n- `422 Unprocessable Entity` — validation failure"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"user\": {\n      \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n      \"name\": \"Alice Example\",\n      \"email\": \"alice@example.com\",\n      \"role\": \"user\",\n      \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-01T00:00:00.000Z\"\n    },\n    \"token\": \"<JWT>\",\n    \"csrfToken\": \"<hex-string>\"\n  }\n}"
+            },
+            {
+              "name": "401 Unauthorized — Invalid credentials",
+              "status": "Unauthorized",
+              "code": 401,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": {\n    \"statusCode\": 401,\n    \"message\": \"Invalid credentials\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Current User (me)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "me"]
+            },
+            "description": "Returns the profile of the currently authenticated user. Requires a valid JWT Bearer token.\n\n**Auth:** Bearer `{{token}}` (auto-populated after Register / Login)\n\n**Errors**\n- `401 Unauthorized` — missing or expired token"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"name\": \"Alice Example\",\n    \"email\": \"alice@example.com\",\n    \"role\": \"user\",\n    \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n    \"updatedAt\": \"2026-01-01T00:00:00.000Z\"\n  }\n}"
+            },
+            {
+              "name": "401 Unauthorized",
+              "status": "Unauthorized",
+              "code": 401,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 401, \"message\": \"Unauthorized\" }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            },
+            "description": "Destroys the server-side Redis session and clears the `sid` cookie.\n\n**Auth:** Session cookie (`sid`) — Postman sends this automatically via its cookie jar once you have logged in or registered. No `Authorization` header needed.\n\n**Errors**\n- `401 Unauthorized` — no active session found"
+          },
+          "response": [
+            {
+              "name": "204 No Content",
+              "status": "No Content",
+              "code": 204,
+              "_postman_previewlanguage": "text",
+              "header": [],
+              "body": ""
+            },
+            {
+              "name": "401 Unauthorized — No active session",
+              "status": "Unauthorized",
+              "code": 401,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 401, \"message\": \"Unauthorized\" }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Create User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  pm.collectionVariables.set('user_id', json.data.id);",
+                  "  console.log('Captured: user_id =', json.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Bob Builder\",\n  \"email\": \"bob@example.com\",\n  \"password\": \"secret1234\",\n  \"role\": \"user\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/users",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "users"]
+            },
+            "description": "Create a new user. Public — no authentication required.\n\nOn success the test script automatically captures `user_id` into the collection variable.\n\n**Request body**\n| Field | Required | Rules |\n|---|---|---|\n| `name` | ✅ | 2 – 100 characters |\n| `email` | ✅ | Valid email address |\n| `password` | ✅ | Minimum 8 characters |\n| `role` | ❌ | `user` or `admin` (default: `user`) |\n\n**Errors**\n- `409 Conflict` — email already in use\n- `422 Unprocessable Entity` — validation failure"
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"550e8400-e29b-41d4-a716-446655440001\",\n    \"name\": \"Bob Builder\",\n    \"email\": \"bob@example.com\",\n    \"role\": \"user\",\n    \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n    \"updatedAt\": \"2026-01-01T00:00:00.000Z\"\n  }\n}"
+            },
+            {
+              "name": "409 Conflict — Email already taken",
+              "status": "Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 409, \"message\": \"Email already in use\" }\n}"
+            }
+          ]
+        },
+        {
+          "name": "List All Users",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/users",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "users"]
+            },
+            "description": "Returns all users in the system (passwords excluded). Requires JWT authentication.\n\n**Auth:** Bearer `{{token}}` (auto-populated after Register / Login)\n\n**Errors**\n- `401 Unauthorized` — missing or expired token"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n      \"name\": \"Alice Example\",\n      \"email\": \"alice@example.com\",\n      \"role\": \"user\",\n      \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2026-01-01T00:00:00.000Z\"\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get User by ID",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/users/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "users", "{{user_id}}"]
+            },
+            "description": "Fetch a single user by UUID. The path parameter is populated automatically from `{{user_id}}`.\n\n**Path parameter:** `id` — must be a valid UUID v4\n\n**Auth:** Bearer `{{token}}`\n\n**Errors**\n- `401 Unauthorized` — missing or expired token\n- `404 Not Found` — user does not exist\n- `422 Unprocessable Entity` — `:id` is not a valid UUID"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"name\": \"Alice Example\",\n    \"email\": \"alice@example.com\",\n    \"role\": \"user\",\n    \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n    \"updatedAt\": \"2026-01-01T00:00:00.000Z\"\n  }\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 404, \"message\": \"User not found\" }\n}"
+            },
+            {
+              "name": "422 Unprocessable Entity — Invalid UUID",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 422, \"message\": \"Validation failed\", \"details\": [{ \"path\": \"id\", \"message\": \"Invalid uuid\" }] }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Update User",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Alice Updated\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/users/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "users", "{{user_id}}"]
+            },
+            "description": "Partially update a user. At least one field is required in the body.\n\n**Path parameter:** `id` — UUID (populated from `{{user_id}}`)\n\n**Request body** (all optional, but at least one required)\n| Field | Rules |\n|---|---|\n| `name` | 2 – 100 characters |\n| `email` | Valid email address |\n| `password` | Minimum 8 characters |\n\n**Auth:** Bearer `{{token}}`\n\n**Errors**\n- `401 Unauthorized` — missing or expired token\n- `404 Not Found` — user does not exist\n- `409 Conflict` — new email already in use by another user\n- `422 Unprocessable Entity` — validation failure or invalid UUID"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"name\": \"Alice Updated\",\n    \"email\": \"alice@example.com\",\n    \"role\": \"user\",\n    \"createdAt\": \"2026-01-01T00:00:00.000Z\",\n    \"updatedAt\": \"2026-03-30T09:00:00.000Z\"\n  }\n}"
+            },
+            {
+              "name": "409 Conflict — Email already in use",
+              "status": "Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 409, \"message\": \"Email already in use\" }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Delete User (admin only)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/users/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "users", "{{user_id}}"]
+            },
+            "description": "Permanently delete a user. Requires the authenticated user to have `role: admin`. The `{{token}}` must therefore belong to an admin account.\n\n**Path parameter:** `id` — UUID (populated from `{{user_id}}`)\n\n**Auth:** Bearer `{{token}}` — **admin role required**\n\n**Errors**\n- `401 Unauthorized` — missing or expired token\n- `403 Forbidden` — authenticated user is not an admin\n- `404 Not Found` — user does not exist\n- `422 Unprocessable Entity` — `:id` is not a valid UUID"
+          },
+          "response": [
+            {
+              "name": "204 No Content",
+              "status": "No Content",
+              "code": 204,
+              "_postman_previewlanguage": "text",
+              "header": [],
+              "body": ""
+            },
+            {
+              "name": "403 Forbidden — Not an admin",
+              "status": "Forbidden",
+              "code": 403,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 403, \"message\": \"Forbidden\" }\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": false,\n  \"error\": { \"statusCode\": 404, \"message\": \"User not found\" }\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
